@@ -50,6 +50,7 @@
             android:divider="#e00"
             android:fadingEdgeLength="5dp"
             android:requiresFadingEdge="horizontal"
+            widget:hori_listview_dividerWidth="4dp"
              />
     </LinearLayout>
 

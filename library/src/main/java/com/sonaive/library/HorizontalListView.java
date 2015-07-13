@@ -3,7 +3,11 @@ package com.sonaive.library;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.content.res.TypedArray;
 import android.database.DataSetObserver;
+import android.graphics.Canvas;
+import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.widget.EdgeEffectCompat;
@@ -68,6 +72,15 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
     /** Tracks the maximum possible X position, stays at max value until last item is laid out and it can be determined */
     private int mMaxX = Integer.MAX_VALUE;
 
+    /** Temporary rectangle to be used for measurements */
+    private Rect mRect = new Rect();
+
+    /** The width of the divider that will be used between list items */
+    private int mDividerWidth = 0;
+
+    /** The drawable that will be used as the list divider */
+    private Drawable mDivider = null;
+
     /** Gesture listener to receive callback when gestures are detected */
     private final GestureListener mGestureListener = new GestureListener();
 
@@ -101,6 +114,7 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
         mGestureDetector = new GestureDetector(context, mGestureListener);
         bindGestureDetector();
         initView();
+        retrieveXmlConfiguration(context, attrs);
         setWillNotDraw(false);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
             HoneyCombPlus.setFriction(mFlingTracker, FLING_FRICTION);
@@ -115,7 +129,7 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
         final OnTouchListener gestureListenerHandler = new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // Delegate the touch event to our gesture detector. bnvhg
+                // Delegate the touch event to our gesture detector.
                 return mGestureDetector.onTouchEvent(event);
             }
         };
@@ -130,6 +144,63 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
         mRightViewAdapterIndex = -1;
         mMaxX = Integer.MAX_VALUE;
         setCurrentScrollState(OnScrollStateChangedListener.ScrollState.SCROLL_STATE_IDLE);
+    }
+
+    /**
+     * Parse the XML configuration for this widget
+     *
+     * @param context Context used for extracting attributes
+     * @param attrs The Attribute Set containing the ColumnView attributes
+     */
+    private void retrieveXmlConfiguration(Context context, AttributeSet attrs) {
+        if (attrs != null) {
+            TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.HorizontalListView);
+
+            // Get the provided drawable from the XML
+            final Drawable d = a.getDrawable(R.styleable.HorizontalListView_android_divider);
+            if (d != null) {
+                // If a drawable is provided to use as the divider then use its intrinsic width for the divider width
+                setDivider(d);
+            }
+
+            // If a width is explicitly specified then use that width
+            final int dividerWidth = a.getDimensionPixelSize(R.styleable.HorizontalListView_hori_listview_dividerWidth, 0);
+            if (dividerWidth != 0) {
+                setDividerWidth(dividerWidth);
+            }
+
+            a.recycle();
+        }
+    }
+
+    /**
+     * Sets the drawable that will be drawn between each item in the list. If the drawable does
+     * not have an intrinsic width, you should also call {@link #setDividerWidth(int)}
+     *
+     * @param divider The drawable to use.
+     */
+    public void setDivider(Drawable divider) {
+        mDivider = divider;
+
+        if (divider != null) {
+            setDividerWidth(divider.getIntrinsicWidth());
+        } else {
+            setDividerWidth(0);
+        }
+    }
+
+    /**
+     * Sets the width of the divider that will be drawn between each item in the list. Calling
+     * this will override the intrinsic width as set by {@link #setDivider(Drawable)}
+     *
+     * @param width The width of the divider in pixels.
+     */
+    public void setDividerWidth(int width) {
+        mDividerWidth = width;
+
+        // Force the view to rerender itself
+        requestLayout();
+        invalidate();
     }
 
     /** DataSetObserver used to capture adapter data change events */
@@ -285,12 +356,63 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
         } else {
             ViewCompat.postOnAnimation(this, mDelayedLayout);
         }
-
-
-
     }
 
+    @Override
+    protected void dispatchDraw(Canvas canvas) {
+        super.dispatchDraw(canvas);
+        drawEdgeGlow(canvas);
+    }
 
+    @Override
+    protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        drawDividers(canvas);
+    }
+
+    private void drawDividers(Canvas canvas) {
+        final int childCount = getChildCount();
+        final Rect bound = mRect;
+        bound.top = getPaddingTop();
+        bound.bottom = getRenderHeight() + getPaddingTop();
+
+        for (int i = 0; i < childCount; i++) {
+            // Don't draw a divider to the right of the last item in the adapter
+            if (!(i == childCount - 1 && isLastItemInAdapter(mRightViewAdapterIndex))) {
+                View child = getChildAt(i);
+                bound.left = child.getRight();
+                bound.right = bound.left + mDividerWidth;
+
+//                // Clip at the left edge of the screen
+//                if (bound.left < getPaddingLeft()) {
+//                    bound.left = getPaddingLeft();
+//                }
+//
+//                // Clip at the right edge of the screen
+//                if (bound.right > getWidth() - getPaddingRight()) {
+//                    bound.right = getWidth() - getPaddingRight();
+//                }
+
+                // Draw a divider to the right of the child
+                drawDivider(canvas, bound);
+
+                // If the first view, determine if a divider should be shown to the left of it.
+                // A divider should be shown if the left side of this view does not fill to the left edge of the screen.
+                if (i == 0 && child.getLeft() > getPaddingLeft()) {
+                    bound.left = getPaddingLeft();
+                    bound.right = child.getLeft();
+                    drawDivider(canvas, bound);
+                }
+            }
+        }
+    }
+
+    private void drawDivider(Canvas canvas, Rect bound) {
+        if (mDivider != null) {
+            mDivider.setBounds(bound);
+            mDivider.draw(canvas);
+        }
+    }
 
     /**
      * Determines the current fling absorb velocity
@@ -314,7 +436,7 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
             // The child is being completely removed so remove its width from the display offset and its divider if it has one.
             // To remove add the size of the child and its divider (if it has one) to the offset.
             // You need to add since its being removed from the left side, i.e. shifting the offset to the right.
-            mDisplayOffset += child.getMeasuredWidth();
+            mDisplayOffset += isLastItemInAdapter(mLeftViewAdapterIndex) ? child.getMeasuredWidth() : mDividerWidth + child.getMeasuredWidth();
 
             // Recycle the removed view
             recycleView(mLeftViewAdapterIndex, child);
@@ -363,8 +485,9 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
             mLeftViewAdapterIndex--;
             View child = mAdapter.getView(mLeftViewAdapterIndex, getRecycledView(mLeftViewAdapterIndex), this);
             addAndMeasureChild(child, INSERT_AT_START_OF_LIST);
-            leftEdge -= child.getMeasuredWidth();
-            mDisplayOffset -= child.getMeasuredWidth();
+            leftEdge -= mLeftViewAdapterIndex == 0 ? child.getMeasuredWidth() : mDividerWidth + child.getMeasuredWidth();
+            // If on a clean edge then just remove the child, otherwise remove the divider as well
+            mDisplayOffset -= leftEdge + dx == 0 ? child.getMeasuredWidth() : mDividerWidth + child.getMeasuredWidth();
         }
     }
 
@@ -377,7 +500,7 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
             }
             View child = mAdapter.getView(mRightViewAdapterIndex, getRecycledView(mRightViewAdapterIndex), this);
             addAndMeasureChild(child, INSERT_AT_END_OF_LIST);
-            rightEdge += child.getMeasuredWidth();
+            rightEdge += (mRightViewAdapterIndex == 0 ? 0 : mDividerWidth) + child.getMeasuredWidth();
         }
 
     }
@@ -396,7 +519,7 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
             // Layout the child
             child.layout(left, top, right, bottom);
 
-            leftOffset += child.getMeasuredWidth();
+            leftOffset += child.getMeasuredWidth() + mDividerWidth;
         }
     }
 
@@ -442,6 +565,49 @@ public class HorizontalListView extends AdapterView<ListAdapter> {
     /** Gets the width in px this view will be rendered. (padding removed) */
     private int getRenderWidth() {
         return getWidth() - getPaddingLeft() - getPaddingRight();
+    }
+
+    /** Draws the overscroll edge glow effect on the left and right sides of the horizontal list */
+    private void drawEdgeGlow(Canvas canvas) {
+        if (mEdgeGlowLeft != null && !mEdgeGlowLeft.isFinished() && isEdgeGlowEnabled()) {
+            // The Edge glow is meant to come from the top of the screen, so rotate it to draw on the left side.
+            final int restoreCount = canvas.save();
+            final int height = getHeight();
+
+            canvas.rotate(-90, 0, 0);
+            canvas.translate(-height + getPaddingBottom(), 0);
+
+            mEdgeGlowLeft.setSize(getRenderHeight(), getRenderWidth());
+            if (mEdgeGlowLeft.draw(canvas)) {
+                invalidate();
+            }
+
+            canvas.restoreToCount(restoreCount);
+        } else if (mEdgeGlowRight != null && !mEdgeGlowRight.isFinished() && isEdgeGlowEnabled()) {
+            // The Edge glow is meant to come from the top of the screen, so rotate it to draw on the right side.
+            final int restoreCount = canvas.save();
+            final int width = getWidth();
+
+            canvas.rotate(90, 0, 0);
+            canvas.translate(getPaddingTop(), -width);
+            mEdgeGlowRight.setSize(getRenderHeight(), getRenderWidth());
+            if (mEdgeGlowRight.draw(canvas)) {
+                invalidate();
+            }
+
+            canvas.restoreToCount(restoreCount);
+        }
+    }
+
+    /**
+     * Checks if the edge glow should be used enabled.
+     * The glow is not enabled unless there are more views than can fit on the screen at one time.
+     */
+    private boolean isEdgeGlowEnabled() {
+        if (mAdapter == null || mAdapter.isEmpty()) return false;
+
+        // If the maxx is more then zero then the user can scroll, so the edge effects should be shown
+        return mMaxX > 0;
     }
 
     /**
