@@ -1,7 +1,9 @@
 package com.sonaive.library;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.database.DataSetObserver;
 import android.os.Build;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.widget.EdgeEffectCompat;
@@ -10,7 +12,7 @@ import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AbsListView;
+import android.widget.AdapterView;
 import android.widget.ListAdapter;
 import android.widget.Scroller;
 
@@ -22,7 +24,7 @@ import java.util.Queue;
 /**
  * Created by liutao on 15-7-9.
  */
-public class HorizontalListView extends AbsListView {
+public class HorizontalListView extends AdapterView<ListAdapter> {
 
     private static final String TAG = HorizontalListView.class.getSimpleName();
 
@@ -130,9 +132,36 @@ public class HorizontalListView extends AbsListView {
         setCurrentScrollState(OnScrollStateChangedListener.ScrollState.SCROLL_STATE_IDLE);
     }
 
+    /** DataSetObserver used to capture adapter data change events */
+    private DataSetObserver mAdapterDataObserver = new DataSetObserver() {
+        @Override
+        public void onChanged() {
+            mDataChanged = true;
+
+            // Invalidate and request layout to force this view to completely redraw itself
+            invalidate();
+            requestLayout();
+        }
+
+        @Override
+        public void onInvalidated() {
+            // Clear so we can notify again as we run out of data
+            reset();
+
+            // Invalidate and request layout to force this view to completely redraw itself
+            invalidate();
+            requestLayout();
+        }
+    };
+
     @Override
     public void setSelection(int position) {
         mCurrentlySelectedAdapterIndex = position;
+    }
+
+    @Override
+    public View getSelectedView() {
+        return getChild(mCurrentlySelectedAdapterIndex);
     }
 
     @Override
@@ -143,12 +172,12 @@ public class HorizontalListView extends AbsListView {
     @Override
     public void setAdapter(ListAdapter adapter) {
         if (mAdapter != null) {
-            mAdapter.unregisterDataSetObserver(null);
+            mAdapter.unregisterDataSetObserver(mAdapterDataObserver);
         }
 
         if (adapter != null) {
             mAdapter = adapter;
-            mAdapter.registerDataSetObserver(null);
+            mAdapter.registerDataSetObserver(mAdapterDataObserver);
             initializeRemovedViewCache(mAdapter.getViewTypeCount());
         }
         reset();
@@ -188,6 +217,7 @@ public class HorizontalListView extends AbsListView {
         mHeightMeasureSpec = heightMeasureSpec;
     }
 
+    @SuppressLint("WrongCall")
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         super.onLayout(changed, l, t, r, b);
@@ -240,6 +270,13 @@ public class HorizontalListView extends AbsListView {
         // Since the view has now been drawn, update the mCurrentX
         mCurrentX = mNextX;
 
+        // If we have scrolled enough to lay out all views, then determine the maximum scroll position now
+        if (determineMaxX()) {
+            // Redo the layout pass since we now know the maximum scroll position
+            onLayout(changed, l, r, t, b);
+            return;
+        }
+
         if (mFlingTracker.isFinished()) {
             // If fling just ended
             if (mCurrentScrollState == OnScrollStateChangedListener.ScrollState.SCROLL_STATE_FLING) {
@@ -252,6 +289,8 @@ public class HorizontalListView extends AbsListView {
 
 
     }
+
+
 
     /**
      * Determines the current fling absorb velocity
@@ -271,7 +310,7 @@ public class HorizontalListView extends AbsListView {
         View child = getLeftmostChild();
 
         // Loop removing the leftmost child, until that child is bound to on the screen
-        while (child.getRight() + dx <= 0) {
+        while (child != null && child.getRight() + dx <= 0) {
             // The child is being completely removed so remove its width from the display offset and its divider if it has one.
             // To remove add the size of the child and its divider (if it has one) to the offset.
             // You need to add since its being removed from the left side, i.e. shifting the offset to the right.
@@ -291,7 +330,7 @@ public class HorizontalListView extends AbsListView {
 
         child = getRightmostChild();
         // Loop removing the rightmost child, until that child is bound to on the screen
-        while (child.getLeft() + dx >= getWidth()) {
+        while (child != null && child.getLeft() + dx >= getWidth()) {
             recycleView(mRightViewAdapterIndex, child);
             mRightViewAdapterIndex--;
             removeViewInLayout(child);
@@ -330,8 +369,12 @@ public class HorizontalListView extends AbsListView {
     }
 
     private void fillListRight(int rightEdge, final int dx) {
-        while (rightEdge + dx < getWidth() && mRightViewAdapterIndex + 1 < getCount()) {
+        while (rightEdge + dx < getWidth() && mRightViewAdapterIndex + 1 < mAdapter.getCount()) {
             mRightViewAdapterIndex++;
+            // If mLeftViewAdapterIndex < 0 then this is the first time a view is being added, and left == right
+            if (mLeftViewAdapterIndex < 0) {
+                mLeftViewAdapterIndex = mRightViewAdapterIndex;
+            }
             View child = mAdapter.getView(mRightViewAdapterIndex, getRecycledView(mRightViewAdapterIndex), this);
             addAndMeasureChild(child, INSERT_AT_END_OF_LIST);
             rightEdge += child.getMeasuredWidth();
@@ -358,6 +401,50 @@ public class HorizontalListView extends AbsListView {
     }
 
     /**
+     * Determine the Max X position. This is the farthest that the user can scroll the screen. Until the last adapter item has been
+     * laid out it is impossible to calculate; once that has occurred this will perform the calculation, and if necessary force a
+     * redraw and relayout of this view.
+     *
+     * @return true if the maxx position was just determined
+     */
+    private boolean determineMaxX() {
+        // If the last view has been laid out, then we can determine the maximum x position
+        if (isLastItemInAdapter(mRightViewAdapterIndex)) {
+            View rightView = getRightmostChild();
+
+            if (rightView != null) {
+                int oldMaxX = mMaxX;
+                mMaxX = mCurrentX + (rightView.getRight() - getPaddingLeft()) - getRenderWidth();
+
+                if (mMaxX < 0) {
+                    mMaxX = 0;
+                }
+
+                if (oldMaxX != mMaxX) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** Simple convenience method for determining if this index is the last index in the adapter */
+    private boolean isLastItemInAdapter(int index) {
+        return index == mAdapter.getCount() - 1;
+    }
+
+    /** Gets the height in px this view will be rendered. (padding removed) */
+    private int getRenderHeight() {
+        return getHeight() - getPaddingTop() - getPaddingBottom();
+    }
+
+    /** Gets the width in px this view will be rendered. (padding removed) */
+    private int getRenderWidth() {
+        return getWidth() - getPaddingLeft() - getPaddingRight();
+    }
+
+    /**
      * Gets the leftmost child that is on the screen
      */
     private View getLeftmostChild() {
@@ -369,6 +456,17 @@ public class HorizontalListView extends AbsListView {
      */
     private View getRightmostChild() {
         return getChildAt(getChildCount() - 1);
+    }
+
+    /**
+     * Finds a child that is contained within this view, given the adapter index.
+     * @return The child view or null if not found
+     */
+    private View getChild(int adapterIndex) {
+        if (adapterIndex >= mLeftViewAdapterIndex && adapterIndex <= mRightViewAdapterIndex) {
+            return getChildAt(adapterIndex - mLeftViewAdapterIndex);
+        }
+        return null;
     }
 
     private void recycleView(int adapterIndex, View child) {
@@ -427,8 +525,40 @@ public class HorizontalListView extends AbsListView {
         return params;
     }
 
+    protected boolean onDown(MotionEvent e) {
+        // Allow a finger down event to catch a fling
+        mFlingTracker.forceFinished(true);
+        setCurrentScrollState(OnScrollStateChangedListener.ScrollState.SCROLL_STATE_IDLE);
+        return true;
+    }
+
+    protected boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+        mFlingTracker.fling(mNextX, 0, (int) -velocityX, 0, 0, mMaxX, 0, 0);
+        setCurrentScrollState(OnScrollStateChangedListener.ScrollState.SCROLL_STATE_FLING);
+        requestLayout();
+        return true;
+    }
+
     class GestureListener extends GestureDetector.SimpleOnGestureListener {
 
+        @Override
+        public boolean onDown(MotionEvent e) {
+            return HorizontalListView.this.onDown(e);
+        }
+
+        @Override
+        public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+            return HorizontalListView.this.onFling(e1, e2, velocityX, velocityY);
+        }
+
+        @Override
+        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+            setCurrentScrollState(OnScrollStateChangedListener.ScrollState.SCROLL_STATE_TOUCH_SCROLL);
+            mNextX += distanceX;
+            updateOverScrollAnimation(Math.round(distanceX));
+            requestLayout();
+            return true;
+        }
     }
 
     public interface OnScrollStateChangedListener {
@@ -475,6 +605,49 @@ public class HorizontalListView extends AbsListView {
             mOnScrollStateChangedListener.onScrollStateChanged(newScrollState);
         }
         mCurrentScrollState = newScrollState;
+    }
+
+    /**
+     * Updates the over scroll animation based on the scrolled offset.
+     *
+     * @param scrolledOffset The scroll offset
+     */
+    private void updateOverScrollAnimation(final int scrolledOffset) {
+        if (mEdgeGlowLeft == null || mEdgeGlowRight == null) return;
+
+        // Calculate where the next scroll position would be
+        int nextScrollPosition = mCurrentX + scrolledOffset;
+
+        // If not currently in a fling (Don't want to allow fling offset updates to cause over scroll animation)
+        if (mFlingTracker == null || mFlingTracker.isFinished()) {
+            // If currently scrolled off the left side of the list and the adapter is not empty
+            if (nextScrollPosition < 0) {
+
+                // Calculate the amount we have scrolled since last frame
+                int overscroll = Math.abs(scrolledOffset);
+
+                // Tell the edge glow to redraw itself at the new offset
+                mEdgeGlowLeft.onPull((float) overscroll / getRenderWidth());
+
+                // Cancel animating right glow
+                if (!mEdgeGlowRight.isFinished()) {
+                    mEdgeGlowRight.onRelease();
+                }
+            } else if (nextScrollPosition > mMaxX) {
+                // Scrolled off the right of the list
+
+                // Calculate the amount we have scrolled since last frame
+                int overscroll = Math.abs(scrolledOffset);
+
+                // Tell the edge glow to redraw itself at the new offset
+                mEdgeGlowRight.onPull((float) overscroll / getRenderWidth());
+
+                // Cancel animating left glow
+                if (!mEdgeGlowLeft.isFinished()) {
+                    mEdgeGlowLeft.onRelease();
+                }
+            }
+        }
     }
 
     @TargetApi(11)
